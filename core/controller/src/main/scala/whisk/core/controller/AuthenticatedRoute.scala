@@ -17,16 +17,17 @@
 
 package whisk.core.controller
 
+import spray.http.HttpHeaders.`WWW-Authenticate`
+import spray.http.{HttpChallenge, HttpRequest}
+
 import scala.Left
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
-
 import spray.http.StatusCodes.InternalServerError
 import spray.http.StatusCodes.ServiceUnavailable
-import spray.routing.RequestContext
-import spray.routing.Route
-import spray.routing.authentication.BasicHttpAuthenticator
-import spray.routing.authentication.UserPass
+import spray.routing.AuthenticationFailedRejection.{CredentialsMissing, CredentialsRejected}
+import spray.routing.{AuthenticationFailedRejection, RequestContext, Route}
+import spray.routing.authentication.{BasicHttpAuthenticator, ContextAuthenticator, UserPass}
 import whisk.common.TransactionId
 import whisk.core.entity.Identity
 import whisk.http.CustomRejection
@@ -48,12 +49,43 @@ trait AuthenticatedRoute {
             }
         }
     }
-
     /** Validates credentials against database of subjects */
     protected def validateCredentials(userpass: Option[UserPass])(implicit transid: TransactionId): Future[Option[Identity]]
+
+    /** Creates client certificate auth handler */
+    protected def certificateAuth(implicit transid: TransactionId) = {
+        new CertificateAuthenticator[Identity](validateCertificate _)
+    }
+
+    /** Validates client certificate against database of subjects */
+    protected def validateCertificate(entityName: Option[String])(implicit transid: TransactionId): Future[Option[Identity]]
+
 }
 
 /** A trait for authenticated routes. */
 trait AuthenticatedRouteProvider {
     def routes(user: Identity)(implicit transid: TransactionId): Route
+}
+
+class CertificateAuthenticator[U](val userPassAuthenticator: Option[String] ⇒ Future[Option[U]])(implicit val executionContext: ExecutionContext) extends ContextAuthenticator[U] {
+
+    def apply(ctx: RequestContext) = {
+        val authHeader = ctx.request.headers.find(_.is("x-ssl-subject"))
+        val subject = authHeader map {
+            case header =>
+                header.value.split(",").find(_.startsWith("CN="))
+        }
+        userPassAuthenticator(subject.getOrElse(None)) map {
+            case Some(userContext) ⇒ Right(userContext)
+            case _ =>
+                val cause = if (authHeader.isEmpty) CredentialsMissing else CredentialsRejected
+                Left(AuthenticationFailedRejection(cause, getChallengeHeaders(ctx.request)))
+        } recover {
+            case t: IllegalStateException => Left(CustomRejection(InternalServerError))
+            case t                        => Left(CustomRejection(ServiceUnavailable))
+        }
+    }
+
+    def getChallengeHeaders(httpRequest: HttpRequest) =
+        `WWW-Authenticate`(HttpChallenge(scheme = "Basic", realm = "whisk rest service", params = Map.empty)) :: Nil
 }

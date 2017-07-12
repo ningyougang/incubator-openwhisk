@@ -133,6 +133,7 @@ class AuthenticateTests extends ControllerTestCommon with Authenticate {
     }
 }
 
+@RunWith(classOf[JUnitRunner])
 class AuthenticatedRouteTests
     extends ControllerTestCommon
     with Authenticate
@@ -145,7 +146,7 @@ class AuthenticatedRouteTests
         implicit val tid = transid()
         handleRejections(BasicHttpService.customRejectionHandler) {
             path("secured") {
-                authenticate(basicauth) {
+                (authenticate(basicauth) | authenticate(certificateAuth)) {
                     user => complete("ok")
                 }
             }
@@ -167,6 +168,22 @@ class AuthenticatedRouteTests
     it should "not authorize an unknown user" in {
         val invalidCredentials = BasicHttpCredentials(UUID().asString, Secret().asString)
         Get("/secured") ~> addCredentials(invalidCredentials) ~> route ~> check {
+            status should be(Unauthorized)
+        }
+    }
+
+    it should "authorize a known user which client certificate's CN field provides" in {
+        implicit val tid = transid()
+        val entry = WhiskAuthHelpers.newAuth()
+        put(authStore, entry)
+        val headerValue = "CN=" + entry.subject.asString + ",O=OpenWhisk,L=Yorktown,ST=NY,C=US"
+        Get("/secured") ~> addHeader("x-ssl-subject", headerValue) ~> route ~> check {
+            status should be(OK)
+        }
+    }
+
+    it should "authorize a unknown user which client certificate's CN field doesn't provide" in {
+        Get("/secured") ~> addHeader("x-ssl-subject", "CN=no-exist-user,O=OpenWhisk,L=Yorktown,ST=NY,C=US") ~> route ~> check {
             status should be(Unauthorized)
         }
     }

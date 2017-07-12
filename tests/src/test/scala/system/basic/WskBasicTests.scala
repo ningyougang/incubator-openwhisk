@@ -88,7 +88,10 @@ class WskBasicTests
 
     it should "reject unauthenticated access" in {
         implicit val wskprops = WskProps("xxx") // shadow properties
-        val errormsg = "The supplied authentication is invalid"
+        //First it uses auth key verification, if failed, uses client certificate verification,
+        //for client certificate verification, if header doesn't include x-ssl-subject,it will
+        //throw CredentialsMissing Exception
+        val errormsg = "The resource requires authentication, which was not supplied with the request"
         wsk.namespace.list(expectedExitCode = UNAUTHORIZED).
             stderr should include(errormsg)
         wsk.namespace.get(expectedExitCode = UNAUTHORIZED).

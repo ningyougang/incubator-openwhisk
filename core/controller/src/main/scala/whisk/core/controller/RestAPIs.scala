@@ -160,7 +160,7 @@ protected[controller] class RestAPIVersion(apipath: String, apiversion: String)(
             sendCorsHeaders {
                 (pathEndOrSingleSlash & get) {
                     complete(OK, info)
-                } ~ authenticate(basicauth) {
+                } ~ (authenticate(basicauth) | authenticate(certificateAuth)) {
                     user =>
                         namespaces.routes(user) ~
                             pathPrefix(Collection.NAMESPACES) {
@@ -176,7 +176,7 @@ protected[controller] class RestAPIVersion(apipath: String, apiversion: String)(
             } ~ {
                 // web actions are distinct to separate the cors header
                 // and allow the actions themselves to respond to options
-                authenticate(basicauth) { user =>
+                (authenticate(basicauth) | authenticate(certificateAuth)) { user =>
                     web.routes(user) ~ webexp.routes(user)
                 } ~ {
                     web.routes() ~ webexp.routes()

@@ -17,19 +17,14 @@
 
 package whisk.core.controller
 
-import scala.concurrent.ExecutionContext
-import scala.concurrent.Future
-import scala.util.Try
 
+import scala.concurrent.{ExecutionContext, Future}
+import scala.util.Try
 import spray.routing.authentication.UserPass
 import whisk.common.Logging
 import whisk.common.TransactionId
 import whisk.core.database.NoDocumentException
-import whisk.core.entity.AuthKey
-import whisk.core.entity.Identity
-import whisk.core.entity.Secret
-import whisk.core.entity.UUID
-import whisk.core.entity.WhiskAuthStore
+import whisk.core.entity._
 import whisk.core.entity.types.AuthStore
 
 object Authenticate {
@@ -79,4 +74,25 @@ trait Authenticate {
             Future.successful(None)
         }
     }
+
+  def validateCertificate(name: Option[String])(implicit transid: TransactionId): Future[Option[Identity]] = {
+      name flatMap { entityName =>
+          val name = entityName.substring("CN=".length, entityName.length)
+          Try {
+              //It also supports getting Identity by subject
+              val future = Identity.get(authStore, EntityName(name)) map { result =>
+                  Some(result)
+              } recover {
+                  case _: NoDocumentException | _: IllegalArgumentException =>
+                      logging.info(this, s"authentication not valid")
+                      None
+              }
+              future onFailure { case t => logging.error(this, s"authentication error: $t") }
+              future
+          }.toOption
+      } getOrElse {
+          Future.successful(None)
+      }
+  }
+
 }
