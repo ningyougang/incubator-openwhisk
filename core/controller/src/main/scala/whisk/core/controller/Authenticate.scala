@@ -17,8 +17,7 @@
 
 package whisk.core.controller
 
-
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.{ ExecutionContext, Future }
 import scala.util.Try
 import spray.routing.authentication.UserPass
 import whisk.common.Logging
@@ -75,24 +74,26 @@ trait Authenticate {
         }
     }
 
-  def validateCertificate(name: Option[String])(implicit transid: TransactionId): Future[Option[Identity]] = {
-      name flatMap { entityName =>
-          val name = entityName.substring("CN=".length, entityName.length)
-          Try {
-              //It also supports getting Identity by subject
-              val future = Identity.get(authStore, EntityName(name)) map { result =>
-                  Some(result)
-              } recover {
-                  case _: NoDocumentException | _: IllegalArgumentException =>
-                      logging.info(this, s"authentication not valid")
-                      None
-              }
-              future onFailure { case t => logging.error(this, s"authentication error: $t") }
-              future
-          }.toOption
-      } getOrElse {
-          Future.successful(None)
-      }
-  }
+    /**
+     * Validates a name (typically received through an SSL handshake) is a valid identity.
+     */
+    def validateCertificate(name: Option[String])(implicit transid: TransactionId): Future[Option[Identity]] = {
+        name flatMap { entityName =>
+            val name = entityName.substring("CN=".length, entityName.length)
+            Try {
+                val future = Identity.get(authStore, EntityName(name)) map { result =>
+                    Some(result)
+                } recover {
+                    case _: NoDocumentException | _: IllegalArgumentException =>
+                        logging.info(this, s"authentication not valid")
+                        None
+                }
+                future onFailure { case t => logging.error(this, s"authentication error: $t") }
+                future
+            }.toOption
+        } getOrElse {
+            Future.successful(None)
+        }
+    }
 
 }

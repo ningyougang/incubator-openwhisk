@@ -18,16 +18,16 @@
 package whisk.core.controller
 
 import spray.http.HttpHeaders.`WWW-Authenticate`
-import spray.http.{HttpChallenge, HttpRequest}
+import spray.http.{ HttpChallenge, HttpRequest }
 
 import scala.Left
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import spray.http.StatusCodes.InternalServerError
 import spray.http.StatusCodes.ServiceUnavailable
-import spray.routing.AuthenticationFailedRejection.{CredentialsMissing, CredentialsRejected}
-import spray.routing.{AuthenticationFailedRejection, RequestContext, Route}
-import spray.routing.authentication.{BasicHttpAuthenticator, ContextAuthenticator, UserPass}
+import spray.routing.AuthenticationFailedRejection.{ CredentialsMissing, CredentialsRejected }
+import spray.routing.{ AuthenticationFailedRejection, RequestContext, Route }
+import spray.routing.authentication.{ BasicHttpAuthenticator, ContextAuthenticator, UserPass }
 import whisk.common.TransactionId
 import whisk.core.entity.Identity
 import whisk.http.CustomRejection

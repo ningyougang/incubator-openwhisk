@@ -52,12 +52,15 @@ After you have configured your environment, you can begin using the OpenWhisk CL
 The CLI can be setup to use an HTTPS proxy. To setup an HTTPS proxy, an environment variable called `HTTPS_PROXY` must be created. The variable must be set to the address of the HTTPS proxy, and its port using the following format:
 `{PROXY IP}:{PROXY PORT}`.
 
-## How to use CLI to pass client certificate(cert and key)
-The CLI has an extra level of security from client to apihost, system provides default client certificate configuration which deployment process generated, then you can refer to below steps to use client certificate:
-* The client certificate verification is off default, you can configure `nginx_ssl_verify_client` to `on` or `optional` to open it for your corresponding environment configuration, `on` means can use client certifcate auth only, `optional` means can use both auth key and client certificate auth.
-* Create your own client certificate instead of system provides if you want, after created, you can configure `openwhisk_client_ca_cert` to your own ca cert path for your corresponding environment configuration.
-* When create your own client cert, make sure `CN` value which is saved in cert's subject info can match corresponding user in couchdb.
-* Run the follwing command to pass client certificate:
+## How to use CLI to pass a client certificate (cert and key)
+
+The CLI may be used with a client certificate to authenticate API requests (in lieu of using the standard basic authentication). This offers an added level of security between a client and API host. This feature is OpenWhisk deployment dependent and may not be available in all hosted offerings.
+
+* The client certificate verification is off default. You can enable it by setting `nginx_ssl_verify_client` to `on` or `optional` in your Ansible environment configuration (e.g., or globally across all deployments [here](../ansible/group_vars/all)). A value of `on` requires clients to present a valid certificate, and a value of `optional` allows for either an authenticate key or a client certificate.
+* You may wish to create your own client certificate instead of the auto-generated one. You must update `openwhisk_client_ca_cert` in your Ansible environment to use your certificate path (e.g., [here](../ansible/group_vars/all)).
+* When creating your own client certificate, make sure the `CN` value corresponds to a valid OpenWhisk namespace. You can add subject namespaces using the `wskadmin` tool.
+
+Below is an example of how to configure the CLI to use a client certificate for authentication:
 ```
 ./bin/wsk property set --cert <client_cert_path> --key <client_key_path>
 ```
