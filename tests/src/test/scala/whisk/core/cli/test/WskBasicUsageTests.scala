@@ -117,9 +117,10 @@ class WskBasicUsageTests
         it should "set valid cert key to get expected success result for client certificate verification" in {
             val tmpwskprops = File.createTempFile("wskprops", ".tmp")
             try {
-                val namespace = wsk.namespace.list().stdout.trim.split("\n").last
+                val namespace = wsk.namespace.whois()
                 val env = Map("WSK_CONFIG_FILE" -> tmpwskprops.getAbsolutePath())
-                // Send request to https://<apihost>/api/v1/namespaces, wsk client passes client certificate to nginx, nginx will
+                // Send request to https://<apihost>/api/v1/namespaces,
+                // wsk client passes client certificate to nginx, nginx will
                 // verify it by client ca's openwhisk-client-ca-cert.pem
                 val stdout = wsk.cli(Seq("property", "set", "-i", "--apihost", wskprops.apihost,
                     "--cert", wskprops.cert, "--key", wskprops.key, "--namespace", namespace), env = env).stdout
