@@ -67,13 +67,14 @@ trait AuthenticatedRouteProvider {
     def routes(user: Identity)(implicit transid: TransactionId): Route
 }
 
-class CertificateAuthenticator[U](val userPassAuthenticator: Option[String] ⇒ Future[Option[U]])(implicit val executionContext: ExecutionContext) extends ContextAuthenticator[U] {
+class CertificateAuthenticator[U](val userPassAuthenticator: Option[String] ⇒ Future[Option[U]])(
+    implicit val executionContext: ExecutionContext)
+    extends ContextAuthenticator[U] {
 
     def apply(ctx: RequestContext) = {
         val authHeader = ctx.request.headers.find(_.is("x-ssl-subject"))
         val subject = authHeader map {
-            case header =>
-                header.value.split(",").find(_.startsWith("CN="))
+            case header => header.value.split(",").find(_.startsWith("CN="))
         }
         userPassAuthenticator(subject.getOrElse(None)) map {
             case Some(userContext) ⇒ Right(userContext)
@@ -86,6 +87,7 @@ class CertificateAuthenticator[U](val userPassAuthenticator: Option[String] ⇒ 
         }
     }
 
-    def getChallengeHeaders(httpRequest: HttpRequest) =
+    def getChallengeHeaders(httpRequest: HttpRequest) = {
         `WWW-Authenticate`(HttpChallenge(scheme = "Basic", realm = "whisk rest service", params = Map.empty)) :: Nil
+    }
 }
