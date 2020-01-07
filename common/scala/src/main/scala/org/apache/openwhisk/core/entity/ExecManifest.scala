@@ -56,6 +56,20 @@ protected[core] object ExecManifest {
   }
 
   /**
+   * Reads runtimes manifest from runtime string
+   *
+   * @param runtime
+   * @return the manifest if initialized successfully, or an failure
+   */
+  protected[core] def initialize(runtime: String): Try[Runtimes] = {
+    val rmc = loadConfigOrThrow[RuntimeManifestConfig](ConfigKeys.runtimes)
+    val mf = Try(runtime.parseJson.asJsObject).flatMap(runtimes(_, rmc))
+    var manifest: Option[Runtimes] = None
+    mf.foreach(m => manifest = Some(m))
+    mf
+  }
+
+  /**
    * Gets existing runtime manifests.
    *
    * @return singleton Runtimes instance previous initialized from WhiskConfig

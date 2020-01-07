@@ -23,7 +23,12 @@ import java.time.Instant
 import akka.Done
 import akka.actor.{ActorRefFactory, ActorSystem, CoordinatedShutdown, Props}
 import akka.event.Logging.InfoLevel
+import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
+import akka.http.scaladsl.server.Directives._
+import akka.http.scaladsl.server.Route
 import akka.stream.ActorMaterializer
+import akka.pattern.ask
+import akka.util.Timeout
 import org.apache.openwhisk.common._
 import org.apache.openwhisk.common.tracing.WhiskTracerProvider
 import org.apache.openwhisk.core.ack.{MessagingActiveAck, UserEventSender}
@@ -40,6 +45,7 @@ import pureconfig._
 import pureconfig.generic.auto._
 import spray.json._
 
+import scala.collection.mutable.ListBuffer
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success}
@@ -166,89 +172,111 @@ class InvokerReactive(
 
   /** Is called when an ActivationMessage is read from Kafka */
   def processActivationMessage(bytes: Array[Byte]): Future[Unit] = {
-    Future(ActivationMessage.parse(new String(bytes, StandardCharsets.UTF_8)))
+    Future(
+      ActivationMessage
+        .parse(new String(bytes, StandardCharsets.UTF_8))
+        .orElse(RuntimeMessage.parse(new String(bytes, StandardCharsets.UTF_8))))
       .flatMap(Future.fromTry)
-      .flatMap { msg =>
-        // The message has been parsed correctly, thus the following code needs to *always* produce at least an
-        // active-ack.
+      .flatMap {
+        case msg: ActivationMessage =>
+          // The message has been parsed correctly, thus the following code needs to *always* produce at least an
+          // active-ack.
 
-        implicit val transid: TransactionId = msg.transid
+          implicit val transid: TransactionId = msg.transid
 
-        //set trace context to continue tracing
-        WhiskTracerProvider.tracer.setTraceContext(transid, msg.traceContext)
+          //set trace context to continue tracing
+          WhiskTracerProvider.tracer.setTraceContext(transid, msg.traceContext)
 
-        if (!namespaceBlacklist.isBlacklisted(msg.user)) {
-          val start = transid.started(this, LoggingMarkers.INVOKER_ACTIVATION, logLevel = InfoLevel)
-          val namespace = msg.action.path
-          val name = msg.action.name
-          val actionid = FullyQualifiedEntityName(namespace, name).toDocId.asDocInfo(msg.revision)
-          val subject = msg.user.subject
+          if (!namespaceBlacklist.isBlacklisted(msg.user)) {
+            val start = transid.started(this, LoggingMarkers.INVOKER_ACTIVATION, logLevel = InfoLevel)
+            val namespace = msg.action.path
+            val name = msg.action.name
+            val actionid = FullyQualifiedEntityName(namespace, name).toDocId.asDocInfo(msg.revision)
+            val subject = msg.user.subject
 
-          logging.debug(this, s"${actionid.id} $subject ${msg.activationId}")
+            logging.debug(this, s"${actionid.id} $subject ${msg.activationId}")
 
-          // caching is enabled since actions have revision id and an updated
-          // action will not hit in the cache due to change in the revision id;
-          // if the doc revision is missing, then bypass cache
-          if (actionid.rev == DocRevision.empty) logging.warn(this, s"revision was not provided for ${actionid.id}")
+            // caching is enabled since actions have revision id and an updated
+            // action will not hit in the cache due to change in the revision id;
+            // if the doc revision is missing, then bypass cache
+            if (actionid.rev == DocRevision.empty) logging.warn(this, s"revision was not provided for ${actionid.id}")
 
-          WhiskAction
-            .get(entityStore, actionid.id, actionid.rev, fromCache = actionid.rev != DocRevision.empty)
-            .flatMap { action =>
-              action.toExecutableWhiskAction match {
-                case Some(executable) =>
-                  pool ! Run(executable, msg)
-                  Future.successful(())
-                case None =>
-                  logging.error(this, s"non-executable action reached the invoker ${action.fullyQualifiedName(false)}")
-                  Future.failed(new IllegalStateException("non-executable action reached the invoker"))
-              }
-            }
-            .recoverWith {
-              case t =>
-                // If the action cannot be found, the user has concurrently deleted it,
-                // making this an application error. All other errors are considered system
-                // errors and should cause the invoker to be considered unhealthy.
-                val response = t match {
-                  case _: NoDocumentException =>
-                    ActivationResponse.applicationError(Messages.actionRemovedWhileInvoking)
-                  case _: DocumentTypeMismatchException | _: DocumentUnreadable =>
-                    ActivationResponse.whiskError(Messages.actionMismatchWhileInvoking)
-                  case _ =>
-                    ActivationResponse.whiskError(Messages.actionFetchErrorWhileInvoking)
+            WhiskAction
+              .get(entityStore, actionid.id, actionid.rev, fromCache = actionid.rev != DocRevision.empty)
+              .flatMap { action =>
+                action.toExecutableWhiskAction match {
+                  case Some(executable) =>
+                    pool ! Run(executable, msg)
+                    Future.successful(())
+                  case None =>
+                    logging.error(
+                      this,
+                      s"non-executable action reached the invoker ${action.fullyQualifiedName(false)}")
+                    Future.failed(new IllegalStateException("non-executable action reached the invoker"))
                 }
+              }
+              .recoverWith {
+                case t =>
+                  // If the action cannot be found, the user has concurrently deleted it,
+                  // making this an application error. All other errors are considered system
+                  // errors and should cause the invoker to be considered unhealthy.
+                  val response = t match {
+                    case _: NoDocumentException =>
+                      ActivationResponse.applicationError(Messages.actionRemovedWhileInvoking)
+                    case _: DocumentTypeMismatchException | _: DocumentUnreadable =>
+                      ActivationResponse.whiskError(Messages.actionMismatchWhileInvoking)
+                    case _ =>
+                      ActivationResponse.whiskError(Messages.actionFetchErrorWhileInvoking)
+                  }
 
-                activationFeed ! MessageFeed.Processed
+                  activationFeed ! MessageFeed.Processed
 
-                val activation = generateFallbackActivation(msg, response)
-                ack(
-                  msg.transid,
-                  activation,
-                  msg.blocking,
-                  msg.rootControllerIndex,
-                  msg.user.namespace.uuid,
-                  CombinedCompletionAndResultMessage(transid, activation, instance))
+                  val activation = generateFallbackActivation(msg, response)
+                  ack(
+                    msg.transid,
+                    activation,
+                    msg.blocking,
+                    msg.rootControllerIndex,
+                    msg.user.namespace.uuid,
+                    CombinedCompletionAndResultMessage(transid, activation, instance))
 
-                store(msg.transid, activation, UserContext(msg.user))
-                Future.successful(())
-            }
-        } else {
-          // Iff the current namespace is blacklisted, an active-ack is only produced to keep the loadbalancer protocol
-          // Due to the protective nature of the blacklist, a database entry is not written.
+                  store(msg.transid, activation, UserContext(msg.user))
+                  Future.successful(())
+              }
+          } else {
+            // Iff the current namespace is blacklisted, an active-ack is only produced to keep the loadbalancer protocol
+            // Due to the protective nature of the blacklist, a database entry is not written.
+            activationFeed ! MessageFeed.Processed
+
+            val activation =
+              generateFallbackActivation(msg, ActivationResponse.applicationError(Messages.namespacesBlacklisted))
+            ack(
+              msg.transid,
+              activation,
+              false,
+              msg.rootControllerIndex,
+              msg.user.namespace.uuid,
+              CombinedCompletionAndResultMessage(transid, activation, instance))
+
+            logging.warn(this, s"namespace ${msg.user.namespace.name} was blocked in invoker.")
+            Future.successful(())
+          }
+        case msg: RuntimeMessage =>
+          val execManifest = ExecManifest.initialize(msg.runtime)
+          if (execManifest.isFailure) {
+            logging.error(this, s"Received invalid runtimes manifest:${execManifest.failed.get}")
+            Future.failed(new Exception(s"Received invalid runtimes manifest"))
+          } else {
+            val prewarmingConfigs: List[PrewarmingConfig] = execManifest.get.stemcells.flatMap {
+              case (mf, cells) =>
+                cells.map { cell =>
+                  PrewarmingConfig(cell.count, new CodeExecAsString(mf, "", None), cell.memory)
+                }
+            }.toList
+            pool ! PreWarmConfigList(prewarmingConfigs)
+          }
           activationFeed ! MessageFeed.Processed
-
-          val activation =
-            generateFallbackActivation(msg, ActivationResponse.applicationError(Messages.namespacesBlacklisted))
-          ack(
-            msg.transid,
-            activation,
-            false,
-            msg.rootControllerIndex,
-            msg.user.namespace.uuid,
-            CombinedCompletionAndResultMessage(transid, activation, instance))
-
-          logging.warn(this, s"namespace ${msg.user.namespace.name} was blocked in invoker.")
           Future.successful(())
-        }
       }
       .recoverWith {
         case t =>
@@ -294,4 +322,13 @@ class InvokerReactive(
       case Failure(t) => logging.error(this, s"failed to ping the controller: $t")
     }
   })
+
+  override def getRuntime(): Route = {
+    complete {
+      pool
+        .ask(PrewarmQuery)(Timeout(5.seconds))
+        .mapTo[ListBuffer[PrewarmContainerData]]
+        .map(f => f.toList.toJson)
+    }
+  }
 }

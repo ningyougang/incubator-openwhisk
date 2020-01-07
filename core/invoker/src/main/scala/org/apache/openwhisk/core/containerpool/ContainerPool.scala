@@ -20,11 +20,13 @@ package org.apache.openwhisk.core.containerpool
 import akka.actor.{Actor, ActorRef, ActorRefFactory, Props}
 import org.apache.openwhisk.common.MetricEmitter
 import org.apache.openwhisk.common.{AkkaLogging, LoggingMarkers, TransactionId}
-import org.apache.openwhisk.core.connector.MessageFeed
+import org.apache.openwhisk.core.connector.{MessageFeed, PrewarmContainerData}
 import org.apache.openwhisk.core.entity._
 import org.apache.openwhisk.core.entity.size._
+
 import scala.annotation.tailrec
 import scala.collection.immutable
+import scala.collection.mutable.ListBuffer
 import scala.concurrent.duration._
 import scala.util.Try
 
@@ -33,6 +35,9 @@ case object Busy extends WorkerState
 case object Free extends WorkerState
 
 case class WorkerData(data: ContainerData, state: WorkerState)
+
+case class PreWarmConfigList(list: List[PrewarmingConfig])
+object PrewarmQuery
 
 case object EmitMetrics
 
@@ -70,6 +75,7 @@ class ContainerPool(childFactory: ActorRefFactory => ActorRef,
   var busyPool = immutable.Map.empty[ActorRef, ContainerData]
   var prewarmedPool = immutable.Map.empty[ActorRef, ContainerData]
   var prewarmStartingPool = immutable.Map.empty[ActorRef, (String, ByteSize)]
+  var latestPrewarmConfig = prewarmConfig
   // If all memory slots are occupied and if there is currently no container to be removed, than the actions will be
   // buffered here to keep order of computation.
   // Otherwise actions with small memory-limits could block actions with large memory limits.
@@ -279,6 +285,28 @@ class ContainerPool(childFactory: ActorRefFactory => ActorRef,
     case RescheduleJob =>
       freePool = freePool - sender()
       busyPool = busyPool - sender()
+    case prewarmConfigList: PreWarmConfigList =>
+      latestPrewarmConfig = prewarmConfigList.list
+      prewarmConfigList.list foreach { config =>
+        // Delete matched prewarm container from prewarmedPool firstly
+        val kind = config.exec.kind
+        val memory = config.memoryLimit
+        prewarmedPool.filter {
+          case (_, PreWarmedData(_, `kind`, `memory`, _)) => true
+          case _                                          => false
+        } foreach { element =>
+          val actor = element._1
+          actor ! Remove
+          prewarmedPool = prewarmedPool - actor
+        }
+        logging.info(this, s"add pre-warming ${config.count} ${config.exec.kind} ${config.memoryLimit.toString}")(
+          TransactionId.invokerWarmup)
+        (1 to config.count).foreach { _ =>
+          prewarmContainer(config.exec, config.memoryLimit)
+        }
+      }
+    case PrewarmQuery =>
+      sender() ! getPrewarmContainer()
     case EmitMetrics =>
       emitMetrics()
   }
@@ -304,7 +332,7 @@ class ContainerPool(childFactory: ActorRefFactory => ActorRef,
 
   /** Install prewarm containers up to the configured requirements for each kind/memory combination. */
   def backfillPrewarms(init: Boolean) = {
-    prewarmConfig.foreach { config =>
+    latestPrewarmConfig.foreach { config =>
       val kind = config.exec.kind
       val memory = config.memoryLimit
       val currentCount = prewarmedPool.count {
@@ -373,6 +401,33 @@ class ContainerPool(childFactory: ActorRefFactory => ActorRef,
     toDelete ! Remove
     freePool = freePool - toDelete
     busyPool = busyPool - toDelete
+  }
+
+  /**
+   * get the prewarm container
+   * @return
+   */
+  def getPrewarmContainer(): ListBuffer[PrewarmContainerData] = {
+    val containerDataList = prewarmedPool.values.toList.map { data =>
+      data.asInstanceOf[PreWarmedData]
+    }
+
+    var resultList: ListBuffer[PrewarmContainerData] = new ListBuffer[PrewarmContainerData]()
+    containerDataList.foreach { prewarmData =>
+      val isInclude = resultList.filter { resultData =>
+        prewarmData.kind == resultData.kind && prewarmData.memoryLimit.toMB == resultData.memory
+      }.size > 0
+
+      if (isInclude) {
+        var resultData = resultList.filter { resultData =>
+          prewarmData.kind == resultData.kind && prewarmData.memoryLimit.toMB == resultData.memory
+        }.head
+        resultData.number += 1
+      } else {
+        resultList += PrewarmContainerData(prewarmData.kind, prewarmData.memoryLimit.toMB, 1)
+      }
+    }
+    resultList
   }
 
   /**

@@ -92,6 +92,13 @@ whisk {
             url = "{{ user_images_registry | default('') }}"
         }
     }
+
+    credentials {
+        controller {
+            username = "{{ controller.username }}"
+            password = "{{ controller.password }}"
+        }
+    }
 }
 
 #test-only overrides so that tests can override defaults in application.conf (todo: move all defaults to reference.conf)

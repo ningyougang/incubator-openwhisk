@@ -105,6 +105,8 @@ controller:
   authentication:
     spi: "{{ controller_authentication_spi | default('') }}"
   loglevel: "{{ controller_loglevel | default(whisk_loglevel) | default('INFO') }}"
+  username: "{{ controller_username | default('controller.user') }}"
+  password: "{{ controller_password | default('controller.pass') }}"
   entitlement:
     spi: "{{ controller_entitlement_spi | default('') }}"
   protocol: "{{ controller_protocol | default('https') }}"
