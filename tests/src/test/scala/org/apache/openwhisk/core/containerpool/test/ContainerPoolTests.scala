@@ -144,6 +144,47 @@ class ContainerPoolTests
    * These tests only test the simplest approaches. Look below for full coverage tests
    * of the respective scheduling methods.
    */
+  it should "not create prewarm container when used momory reaches the limit" in within(timeout) {
+    val (containers, factory) = testContainers(4)
+    val feed = TestProbe()
+
+    val alternativeExec = CodeExecAsString(RuntimeManifest("anotherKind", ImageName("testImage")), "testCode", None)
+    val alternativeAction = ExecutableWhiskAction(EntityPath("actionSpace"), EntityName("actionName"), alternativeExec)
+    val alternativeRunMessage = createRunMessage(alternativeAction, invocationNamespace)
+
+    val pool =
+      system.actorOf(
+        ContainerPool
+          .props(
+            factory,
+            poolConfig(MemoryLimit.STD_MEMORY * 3),
+            feed.ref,
+            List(PrewarmingConfig(1, exec, memoryLimit), PrewarmingConfig(1, alternativeExec, memoryLimit))))
+    println("=======test==0")
+    containers(0).expectMsg(Start(exec, memoryLimit))
+    containers(0).send(pool, NeedWork(preWarmedData(exec.kind)))
+
+    containers(1).expectMsg(Start(alternativeExec, memoryLimit))
+    containers(1).send(pool, NeedWork(preWarmedData(alternativeExec.kind)))
+
+    println("=======test==1")
+    pool ! runMessage
+    containers(0).expectMsg(runMessage)
+    containers(0).send(pool, NeedWork(warmedData(runMessage)))
+
+    containers(2).expectMsg(Start(exec, memoryLimit))
+    //containers(2).send(pool, NeedWork(preWarmedData(exec.kind)))
+
+    println("=======test==2")
+    pool ! alternativeRunMessage
+    containers(1).expectMsg(alternativeRunMessage)
+    //containers(1).send(pool, NeedWork(warmedData(alternativeRunMessage)))
+
+    println("=======test==3")
+    pool ! runMessage
+    containers(3).expectNoMessage(100.milliseconds)
+  }
+
   it should "reuse a warm container" in within(timeout) {
     val (containers, factory) = testContainers(2)
     val feed = TestProbe()
@@ -320,7 +361,7 @@ class ContainerPoolTests
     val pool =
       system.actorOf(
         ContainerPool
-          .props(factory, poolConfig(0.MB), feed.ref, List(PrewarmingConfig(1, exec, memoryLimit))))
+          .props(factory, poolConfig(MemoryLimit.STD_MEMORY), feed.ref, List(PrewarmingConfig(1, exec, memoryLimit))))
     containers(0).expectMsg(Start(exec, memoryLimit))
   }
 
